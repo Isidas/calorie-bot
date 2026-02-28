@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    image: calorie-bot:latest
+    container_name: calorie-bot
+    restart: unless-stopped
+    env_file: .env
+    # Optional: override or set env vars here
+    # environment:
+    #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    #   - GEMINI_API_KEY=${GEMINI_API_KEY}
+    #   - USDA_API_KEY=${USDA_API_KEY}
