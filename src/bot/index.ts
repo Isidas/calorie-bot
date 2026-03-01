@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import { onStart, onNonPhoto, createPhotoHandler } from './handlers';
+import { onStart, onNonPhoto, createPhotoHandler, createClarificationCallback } from './handlers';
 import type { DishService } from '../services/dish-service';
 import type { ImageWithMime, ImageMimeType } from '../types';
 import { withTelegramRetry } from './telegram-retry';
@@ -54,6 +54,7 @@ export function createBot(token: string, dishService: DishService): Telegraf {
 
   bot.start(onStart);
   bot.on('photo', createPhotoHandler(dishService, getFileBuffer));
+  bot.action(/^clarify:/, createClarificationCallback());
   bot.on('message', onNonPhoto);
 
   bot.catch((err, ctx) => {

@@ -1,7 +1,15 @@
 import type { Context } from 'telegraf';
+import { Markup } from 'telegraf';
 import type { DishService } from '../services/dish-service';
 import type { DishAnalysis } from '../types';
+import type { ClarificationQuestion } from '../services/dialog-state';
 import { RateLimitError } from '../services';
+import {
+  shouldAskClarification,
+  generateQuestion,
+  applyCorrection,
+} from '../services/clarification-service';
+import { setDialog, getDialog, clearDialog } from '../services/dialog-state';
 import { withTelegramRetry } from './telegram-retry';
 
 const NOT_PHOTO_MESSAGE =
@@ -51,6 +59,14 @@ export function onStart(ctx: Context): ReturnType<Context['reply']> {
   );
 }
 
+function buildClarificationKeyboard(question: ClarificationQuestion) {
+  return Markup.inlineKeyboard(
+    question.options.map((opt) =>
+      Markup.button.callback(opt.label, `clarify:${question.id}:${opt.value}`)
+    )
+  );
+}
+
 export function createPhotoHandler(
   dishService: DishService,
   getFileBuffer: (fileId: string) => Promise<{ buffer: Buffer; mimeType: import('../types').ImageMimeType }>
@@ -89,6 +105,20 @@ export function createPhotoHandler(
             formatResult(analysis)
           )
         );
+        if (analysis.is_food && shouldAskClarification(analysis)) {
+          const question = generateQuestion(analysis);
+          if (question) {
+            await withTelegramRetry(() =>
+              ctx.reply(question.text, buildClarificationKeyboard(question))
+            );
+            setDialog(userId, {
+              userId,
+              baseAnalysis: analysis,
+              question,
+              startedAt: Date.now(),
+            });
+          }
+        }
       } catch (err) {
         console.error('[Calorie Bot] Error processing photo:', err);
         let userMessage: string;
@@ -162,4 +192,42 @@ export function createPhotoHandler(
 
 export function onNonPhoto(ctx: Context): ReturnType<Context['reply']> {
   return ctx.reply(NOT_PHOTO_MESSAGE);
+}
+
+const CLARIFY_PREFIX = 'clarify:';
+
+export function createClarificationCallback() {
+  return async (ctx: Context): Promise<void> => {
+    const data = ctx.callbackQuery && 'data' in ctx.callbackQuery ? ctx.callbackQuery.data : undefined;
+    const userId = ctx.from?.id;
+    if (!data?.startsWith(CLARIFY_PREFIX) || userId === undefined) {
+      await ctx.answerCbQuery?.().catch(() => {});
+      return;
+    }
+    const payload = data.slice(CLARIFY_PREFIX.length);
+    const [questionId, answer] = payload.split(':');
+    if (!questionId || !answer) {
+      await ctx.answerCbQuery?.().catch(() => {});
+      return;
+    }
+
+    const dialog = getDialog(userId);
+    await ctx.answerCbQuery?.().catch(() => {});
+
+    if (!dialog) {
+      return;
+    }
+
+    try {
+      const updated = applyCorrection(dialog.baseAnalysis, answer, questionId);
+      const chatId = ctx.chat?.id;
+      if (chatId) {
+        await withTelegramRetry(() =>
+          ctx.telegram.sendMessage(chatId, formatResult(updated))
+        );
+      }
+    } finally {
+      clearDialog(userId);
+    }
+  };
 }
