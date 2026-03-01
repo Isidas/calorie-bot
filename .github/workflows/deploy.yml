@@ -17,5 +17,4 @@ jobs:
           username: deploy
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/deploy/calorie-bot
-            ./deploy.sh
+            /home/deploy/deploy.sh
