@@ -49,11 +49,30 @@ export class DishService {
       return analysis;
     }
 
+    // Собираем все кандидаты: основной вариант + alternatives
+    const allCandidates = [
+      ...visionResult.candidates,
+      ...visionResult.alternatives.flatMap((a) => a.candidates),
+    ];
+    const uniqueCandidates = [...new Set(allCandidates)].slice(0, 8);
+
     const nutritionResult = await this.nutrition.getNutrition(
       visionResult.dish,
-      visionResult.candidates,
+      uniqueCandidates,
       visionResult.portion_grams,
       visionResult.confidence
+    );
+
+    // Пересчитываем диапазон калорий с учётом диапазона веса
+    const portionMin = visionResult.portion_min || visionResult.portion_grams;
+    const portionMax = visionResult.portion_max || visionResult.portion_grams;
+    const weightRatio = portionMax > 0 && portionMin > 0 ? portionMax / portionMin : 1;
+    const caloriesRangeMin = Math.round(nutritionResult.calories_range.min);
+    const caloriesRangeMax = Math.round(nutritionResult.calories_range.max * Math.min(weightRatio, 1.5));
+
+    // Если есть альтернативные варианты блюда — добавляем в assumptions
+    const altAssumptions = visionResult.alternatives.slice(0, 2).map(
+      (a) => `Возможно также: ${a.dish} (${a.confidence === 'high' ? 'вероятно' : 'менее вероятно'})`
     );
 
     const analysis: DishAnalysis = {
@@ -64,9 +83,9 @@ export class DishService {
       protein: nutritionResult.protein,
       fat: nutritionResult.fat,
       carbs: nutritionResult.carbs,
-      calories_range: nutritionResult.calories_range,
+      calories_range: { min: caloriesRangeMin, max: caloriesRangeMax },
       confidence: nutritionResult.confidence,
-      assumptions: nutritionResult.assumptions,
+      assumptions: [...nutritionResult.assumptions, ...altAssumptions],
     };
     saveToHistory(userId, analysis);
     return analysis;

@@ -6,15 +6,23 @@ import type { ImageMimeType } from '../types';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-const VISION_SYSTEM = `You are a food recognition expert. From the photo determine:
-1. is_food (true/false) - is there a dish/food on the photo; if not (e.g. text, object) - false.
-2. dish - main dish name ONLY in Russian, use Cyrillic. Examples: "аджарули хачапури", "куриная грудка на гриле", "спагетти карбонара". Never use English or Latin script for dish.
-3. portion_grams - estimated portion weight in grams.
-4. candidates - array of 2-5 search query strings in ENGLISH for a nutrition database (e.g. "chicken breast", "khachapuri", "pasta").
-5. confidence - "low" | "medium" | "high" based on how clear the dish is.
+const VISION_SYSTEM = `You are a food recognition expert. Analyze the photo and return JSON with these fields:
 
-Respond with STRICT JSON only, no markdown, no code blocks, no extra text.
-Format: {"is_food":true,"dish":"только русскими буквами","portion_grams":number,"candidates":["english","query"],"confidence":"low|medium|high"}`;
+1. is_food (true/false) - is there a dish/food on the photo.
+2. variants - array of 1-3 dish variants ordered by confidence (most likely first). Each variant:
+   - dish: dish name ONLY in Russian Cyrillic (e.g. "мясо по-французски", "спагетти карбонара")
+   - candidates: 2-5 English search queries for nutrition database (e.g. ["chicken breast baked", "french style meat"])
+   - confidence: "low" | "medium" | "high"
+3. portion_min - minimum estimated portion weight in grams (conservative estimate)
+4. portion_max - maximum estimated portion weight in grams (generous estimate)
+5. size_clues - visible size references used for estimation (e.g. "standard dinner plate", "fork visible", "bowl 500ml")
+
+Use visible objects (plate size, cutlery, glass) to estimate weight range. Be conservative.
+
+Respond with STRICT JSON only, no markdown, no code blocks.
+Format: {"is_food":true,"variants":[{"dish":"русское название","candidates":["english","query"],"confidence":"high"}],"portion_min":200,"portion_max":350,"size_clues":"standard plate"}
+
+If not food: {"is_food":false,"variants":[],"portion_min":0,"portion_max":0,"size_clues":""}`;
 
 const VISION_USER = 'Analyze this dish. Return ONLY valid JSON.';
 
@@ -167,32 +175,73 @@ export class GeminiProvider implements IVisionProvider {
     }
     const o = data as Record<string, unknown>;
     const is_food = o.is_food === true || String(o.is_food).toLowerCase() === 'true';
-    const dish = String(o.dish ?? '').trim();
+
     const num = (key: string) => {
       const v = o[key];
       if (typeof v === 'number' && !Number.isNaN(v)) return Math.max(0, Math.round(v));
       if (typeof v === 'string') return Math.max(0, Math.round(parseFloat(v)) || 0);
       return 0;
     };
-    const portion_grams = num('portion_grams');
-    let candidates: string[] = [];
-    if (Array.isArray(o.candidates)) {
-      candidates = o.candidates
+
+    const parseConf = (v: unknown): DishVision['confidence'] => {
+      const s = String(v ?? 'medium').toLowerCase();
+      return s === 'low' || s === 'high' ? s : 'medium';
+    };
+
+    const parseCandidates = (arr: unknown): string[] => {
+      if (!Array.isArray(arr)) return [];
+      return arr
         .filter((x): x is string => typeof x === 'string')
         .map((s) => s.trim())
         .filter(Boolean)
         .slice(0, 5);
+    };
+
+    // Новый формат: variants[]
+    let dish = '';
+    let candidates: string[] = [];
+    let confidence: DishVision['confidence'] = 'medium';
+    const alternatives: import('../types').DishAlternative[] = [];
+
+    if (Array.isArray(o.variants) && o.variants.length > 0) {
+      const variants = o.variants as Record<string, unknown>[];
+      const first = variants[0];
+      dish = String(first.dish ?? '').trim();
+      candidates = parseCandidates(first.candidates);
+      confidence = parseConf(first.confidence);
+
+      for (const v of variants.slice(1)) {
+        const altDish = String(v.dish ?? '').trim();
+        if (altDish) {
+          alternatives.push({
+            dish: altDish,
+            candidates: parseCandidates(v.candidates),
+            confidence: parseConf(v.confidence),
+          });
+        }
+      }
+    } else {
+      // Fallback на старый формат
+      dish = String(o.dish ?? '').trim();
+      candidates = parseCandidates(o.candidates);
+      confidence = parseConf(o.confidence);
     }
+
     if (candidates.length === 0 && dish) candidates = [dish];
-    const confRaw = String(o.confidence ?? 'medium').toLowerCase();
-    const confidence: DishVision['confidence'] =
-      confRaw === 'low' || confRaw === 'high' ? confRaw : 'medium';
+
+    const portion_min = num('portion_min') || num('portion_grams');
+    const portion_max = num('portion_max') || portion_min;
+    const portion_grams = Math.round((portion_min + portion_max) / 2) || portion_min;
+
     return {
       is_food,
       dish,
       portion_grams,
+      portion_min,
+      portion_max,
       candidates,
       confidence,
+      alternatives,
     };
   }
 }

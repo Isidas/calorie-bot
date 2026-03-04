@@ -4,13 +4,23 @@ export interface CaloriesRange {
   max: number;
 }
 
+/** Альтернативный вариант распознавания блюда */
+export interface DishAlternative {
+  dish: string;
+  candidates: string[];
+  confidence: 'low' | 'medium' | 'high';
+}
+
 /** Результат vision-анализа: блюдо и порция (без калорий) */
 export interface DishVision {
   is_food: boolean;
   dish: string;
   portion_grams: number;
+  portion_min: number;
+  portion_max: number;
   candidates: string[];
   confidence: 'low' | 'medium' | 'high';
+  alternatives: DishAlternative[];
 }
 
 /** Финальный результат анализа для бота */
