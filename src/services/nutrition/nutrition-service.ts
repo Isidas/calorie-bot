@@ -1,6 +1,7 @@
 import type { EstimatedMacros } from '../../types';
 import type { IVisionProvider } from '../../types';
 import type { CaloriesRange } from '../../types';
+import type { DishIngredient } from '../../types';
 import type { UsdaSearchHit } from './usda-client';
 import { UsdaClient } from './usda-client';
 
@@ -110,12 +111,109 @@ function lowerConfidence(c: Confidence): Confidence {
   return 'low';
 }
 
+/** Блюда, которые нужно разбивать на ингредиенты */
+const COMPOSITE_DISH_KEYWORDS = [
+  // Русские
+  'винегрет', 'борщ', 'щи', 'солянка', 'рассольник', 'окрошка',
+  'оливье', 'салат', 'запеканка', 'рагу', 'плов', 'рис',
+  'паста', 'лазанья', 'пицца', 'суп', 'похлёбка', 'уха',
+  'голубцы', 'долма', 'пельмени', 'вареники', 'манты',
+  'жаркое', 'гуляш', 'тушёное', 'тушёный', 'тушёная',
+  // Английские (на случай если dish пришёл на английском)
+  'salad', 'soup', 'stew', 'casserole', 'pasta', 'pizza',
+  'pilaf', 'borscht', 'vinaigrette', 'lasagna',
+];
+
+function isCompositeDish(dishName: string): boolean {
+  const lower = dishName.toLowerCase();
+  return COMPOSITE_DISH_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 export class NutritionService {
   constructor(
     private usda: UsdaClient,
     private visionProvider: IVisionProvider | null,
     private enableGeminiFallback: boolean
   ) {}
+
+  /** Получить КБЖУ одного ингредиента из USDA */
+  private async getIngredientNutrition(
+    ingredient: DishIngredient
+  ): Promise<EstimatedMacros | null> {
+    try {
+      const hits = await this.usda.searchFoods(ingredient.searchQuery);
+      const ordered = chooseBestMatch(hits, ingredient.searchQuery);
+      for (const hit of ordered.slice(0, 3)) {
+        try {
+          const details = await this.usda.getFoodDetails(hit.fdcId);
+          return scaleNutrients(details.nutrientsPer100g, ingredient.weightGrams);
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /** Считать КБЖУ по списку ингредиентов */
+  private async getNutritionByIngredients(
+    dishName: string,
+    portionGrams: number,
+    visionConfidence: Confidence
+  ): Promise<NutritionResult | null> {
+    if (!this.visionProvider?.decomposeIngredients) return null;
+
+    const ingredients = await this.visionProvider.decomposeIngredients(dishName, portionGrams);
+    if (ingredients.length < 2) return null;
+
+    const results = await Promise.all(
+      ingredients.map((ing) => this.getIngredientNutrition(ing))
+    );
+
+    // Считаем сколько ингредиентов нашли
+    const found = results.filter((r) => r !== null);
+    if (found.length < Math.ceil(ingredients.length * 0.5)) return null; // нашли меньше половины — не доверяем
+
+    const totals = found.reduce(
+      (acc, r) => ({
+        calories: acc.calories + (r?.calories ?? 0),
+        protein: acc.protein + (r?.protein ?? 0),
+        fat: acc.fat + (r?.fat ?? 0),
+        carbs: acc.carbs + (r?.carbs ?? 0),
+      }),
+      { calories: 0, protein: 0, fat: 0, carbs: 0 }
+    );
+
+    const foundIngredients = ingredients
+      .filter((_, i) => results[i] !== null)
+      .map((ing) => ing.name);
+
+    const missedIngredients = ingredients
+      .filter((_, i) => results[i] === null)
+      .map((ing) => ing.name);
+
+    const assumptions: string[] = [
+      `Расчёт по ингредиентам: ${foundIngredients.join(', ')}.`,
+    ];
+    if (missedIngredients.length > 0) {
+      assumptions.push(`Не найдено в базе (не учтено): ${missedIngredients.join(', ')}.`);
+    }
+
+    const confidence: Confidence = found.length === ingredients.length ? visionConfidence : 'medium';
+
+    return {
+      calories: Math.round(totals.calories),
+      protein: Math.round(totals.protein * 10) / 10,
+      fat: Math.round(totals.fat * 10) / 10,
+      carbs: Math.round(totals.carbs * 10) / 10,
+      calories_range: toCaloriesRange(Math.round(totals.calories), confidence, true),
+      confidence,
+      assumptions,
+      fromDb: true,
+    };
+  }
 
   /**
    * Ищет в USDA по dishName и candidates (с chooseBestMatch), при неудаче — fallback через Gemini только если enableGeminiFallback.
@@ -126,6 +224,20 @@ export class NutritionService {
     portionGrams: number,
     visionConfidence: Confidence
   ): Promise<NutritionResult> {
+    // Для составных блюд — сначала пробуем разбивку на ингредиенты
+    if (isCompositeDish(dishName)) {
+      try {
+        const ingredientResult = await this.getNutritionByIngredients(
+          dishName,
+          portionGrams,
+          visionConfidence
+        );
+        if (ingredientResult) return ingredientResult;
+      } catch {
+        // Fallback на обычный USDA поиск
+      }
+    }
+
     // Поиск USDA по английским candidates (dish приходит на русском для отображения)
     const queries = [
       ...candidates.filter((c) => c.trim()),

@@ -2,6 +2,7 @@ import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai'
 import type { IVisionProvider } from '../types';
 import type { DishVision } from '../types';
 import type { EstimatedMacros } from '../types';
+import type { DishIngredient } from '../types';
 import type { ImageMimeType } from '../types';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -78,6 +79,37 @@ export class GeminiProvider implements IVisionProvider {
       return out.replace(/^["']|["']$/g, '').trim() || t;
     } catch {
       return t;
+    }
+  }
+
+  /** Разбить составное блюдо на ингредиенты с весами */
+  async decomposeIngredients(dish: string, portionGrams: number): Promise<DishIngredient[]> {
+    const prompt = `You are a culinary nutrition expert. Decompose the dish "${dish}" (total portion: ${portionGrams}g) into its main ingredients with estimated weights.
+
+Rules:
+- List 3-8 main ingredients (skip minor spices/salt)
+- Weights must sum to approximately ${portionGrams}g
+- name: ingredient name in Russian
+- searchQuery: ingredient name in English for USDA nutrition database (e.g. "beet raw", "potato boiled", "carrot raw")
+- weightGrams: estimated weight in grams for this portion
+
+Return ONLY valid JSON array, no markdown:
+[{"name":"свёкла","searchQuery":"beet raw","weightGrams":80},{"name":"картофель варёный","searchQuery":"potato boiled","weightGrams":70}]`;
+
+    try {
+      const json = await this.callText(prompt);
+      const raw = JSON.parse(json);
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .filter((item): item is Record<string, unknown> => item && typeof item === 'object')
+        .map((item) => ({
+          name: String(item.name ?? '').trim(),
+          searchQuery: String(item.searchQuery ?? '').trim(),
+          weightGrams: Math.max(1, Math.round(Number(item.weightGrams) || 0)),
+        }))
+        .filter((item) => item.name && item.searchQuery && item.weightGrams > 0);
+    } catch {
+      return [];
     }
   }
 

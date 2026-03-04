@@ -51,6 +51,8 @@ export interface IVisionProvider {
   estimateNutrition?(dish: string, portionGrams: number): Promise<EstimatedMacros>;
   /** Перевести короткую фразу на русский (например описание продукта из USDA) */
   translateToRussian?(text: string): Promise<string>;
+  /** Разбить составное блюдо на ингредиенты с весами */
+  decomposeIngredients?(dish: string, portionGrams: number): Promise<DishIngredient[]>;
 }
 
 /** Оценка БЖУ от Gemini (fallback при отсутствии в БД) */
@@ -59,4 +61,11 @@ export interface EstimatedMacros {
   protein: number;
   fat: number;
   carbs: number;
+}
+
+/** Ингредиент составного блюда */
+export interface DishIngredient {
+  name: string;           // название на русском
+  searchQuery: string;    // поисковый запрос для USDA на английском
+  weightGrams: number;    // вес в граммах
 }
