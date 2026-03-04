@@ -7,12 +7,8 @@ const OIL_KEYWORDS = ['pasta', 'spaghetti', 'fettuccine', 'penne', 'паста',
 const COMPLEX_KEYWORDS = ['stew', 'casserole', 'curry', 'soup', 'pizza', 'lasagna', 'risotto', 'pilaf', 'plov', 'borscht', 'суп', 'пицца', 'лазанья', 'ризотто', 'плов', 'борщ', 'рагу', 'запеканка', 'карри'];
 
 export function shouldAskClarification(analysis: DishAnalysis): boolean {
-  const dishLower = analysis.dish.toLowerCase();
-  const allKeywords = [...CREAMY_KEYWORDS, ...SAUCE_KEYWORDS, ...OIL_KEYWORDS, ...COMPLEX_KEYWORDS];
-  if (allKeywords.some((kw) => dishLower.includes(kw))) return true;
-  // Для блюд с низкой/средней уверенностью — тоже спрашиваем
-  if (analysis.confidence === 'low' || analysis.confidence === 'medium') return true;
-  return false;
+  // Спрашиваем для любого распознанного блюда
+  return true;
 }
 
 export function generateQuestion(analysis: DishAnalysis): ClarificationQuestion | null {
@@ -62,19 +58,15 @@ export function generateQuestion(analysis: DishAnalysis): ClarificationQuestion 
     };
   }
 
-  // Fallback для блюд с низкой уверенностью
-  if (analysis.confidence === 'low' || analysis.confidence === 'medium') {
-    return {
-      id: 'sauce',
-      text: 'Есть ли в блюде соус, масло или заправка?',
-      options: [
-        { label: 'Да', value: 'yes' },
-        { label: 'Нет', value: 'no' },
-      ],
-    };
-  }
-
-  return null;
+  // Fallback для любого блюда — если ни одно ключевое слово не совпало
+  return {
+    id: 'sauce',
+    text: 'Есть ли в блюде соус, масло, сыр или заправка?',
+    options: [
+      { label: 'Да', value: 'yes' },
+      { label: 'Нет', value: 'no' },
+    ],
+  };
 }
 
 export function applyCorrection(
